@@ -215,3 +215,43 @@ Not yet proven: tracking quality in real open-field evening conditions (on-site 
 5. Note: camera currently at ~40 deg tilt; VISO_POS offsets still need setting.
 
 Status: VIO pipeline connects end-to-end, but motion scale is unusable until fixed.
+
+---
+
+## 2026-07-05 — Scale bug FIXED + pre-flight prep
+
+### Scale bug root-cause + fix
+- Stereo baseline VERIFIED correct: P[3]=-16.117, fx=321.97 -> baseline=50mm (correct for D435i). NOT the bug.
+- VISUAL-ONLY TEST: copied stock launch -> vio_slam_noimu.launch.py, set enable_imu_fusion=False.
+- Result: 50cm slide read exactly ~0.50m (correct scale!). With IMU fusion on it was ~100x off.
+- CONCLUSION: the IMU FUSION was corrupting scale. FIX: run VISUAL-ONLY mode for now
+  (stereo gives metric scale). Launch with vio_slam_noimu.launch.py.
+- Suspect for IMU-fusion bug: imu_frame/extrinsics with the ~40deg tilt, or gyro units. Refine later.
+
+### Sign/axis check (visual-only, correct scale)
+- cuVSLAM stable when still (identical samples). forward->+X, left->+Y, cuVSLAM raw z rose +0.27 on 30cm lift.
+- EKF3 fused: horizontal x/y correct direction + scale; z is baro-driven (EK3_SRC1_POSZ=1) so fused z doesn't follow camera lift - BY DESIGN.
+
+### Field attempt - aborted (correctly)
+- Went to field w/ props; MAVROS appeared pegged (100% CPU) -> aborted flight.
+- BENCH DIAGNOSIS: MAVROS actually WORKS (connected, state @ 1 Hz, params loaded) -
+  just runs hot at ~90% CPU. NOT a dead link. cuVSLAM stays stable even under that load.
+- Lowered SR2_POSITION 30->10 (CPU 99->90%). Stream rate is part of it; rest is Orin contention. Tolerable.
+
+### Pre-flight items done
+- RC: was "not found" -> did RC CALIBRATION in Mission Planner -> error gone. PPM rx, RCIN port, bound.
+- VISO_POS set to actual mount: X=0.13 (cam 13cm FWD), Y=0.0, Z=0.01 (1cm down). Camera tilt ~38 deg.
+- Pilot can fly AltHold/Stabilize manually.
+
+### FLIGHT PLAN (next field session)
+- Flight 1: AltHold, VIO PASSIVE (not controlling). Manual hover. Watch if cuVSLAM survives flight vibration (never tested!).
+- Flight 2: Loiter/PosHold (VIO controls) ONLY after Flight 1 clean. Low, finger on mode switch to abort to AltHold.
+- First use mode switch AltHold<->Loiter as safety net.
+
+### Open risks / TODO
+- Secure T7 + cables rigidly (T7 unmounted once today - USB storage risk on vibrating frame).
+- Left MIPI error on camera - watch under vibration.
+- NVMe still needed before autonomous (VIO-control) untethered flight.
+- Refine IMU-fusion scale bug for full VIO robustness (currently visual-only).
+- MAVROS 90% CPU - optimize later if needed.
+- remember: after reboot regen CDI (/dev/fb0); kill stale realsense procs before cuVSLAM.
