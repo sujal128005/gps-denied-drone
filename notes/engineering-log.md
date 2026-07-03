@@ -91,3 +91,23 @@ Dated record of work, decisions, and rationale. Newest entries at the bottom.
 ### Next
 - Bring up Isaac ROS Visual SLAM (cuVSLAM) with the combined realsense launch.
 - Set up TF frames; run on-site feature-tracking test to finalize camera angle (~40 deg).
+
+---
+
+## 2026-07-03 (evening) — cuVSLAM VIO pipeline working (bench)
+
+- Installed ros-humble-isaac-ros-visual-slam via apt (Isaac repo in container).
+- Launched isaac_ros_visual_slam_realsense.launch.py (camera + cuVSLAM together).
+- cuVSLAM tracker initialized OK (use_gpu: true, IMU fusion: true, ~6s GPU/TRT setup).
+- /visual_slam/tracking/odometry publishing steady at ~89.8 Hz.
+- Confirmed tracking responds to motion: position values change when camera moved,
+  return near start when returned. VIO is real.
+- GPU acceleration working inside container (CDI fix confirmed in practice).
+
+Proven: camera -> cuVSLAM -> odometry pipeline, GPU, IMU fusion, motion tracking.
+Not yet proven: tracking quality in real open-field evening conditions (on-site test, 40 deg).
+
+### Next
+- MAVROS bridge: Jetson <-> Cube Orange over USB->UART (CP210x).
+- Then: time sync, then EKF3 vision fusion.
+- In parallel (field): re-mount camera 40 deg, run cuVSLAM feature-tracking test.
