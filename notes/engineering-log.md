@@ -111,3 +111,37 @@ Not yet proven: tracking quality in real open-field evening conditions (on-site 
 - MAVROS bridge: Jetson <-> Cube Orange over USB->UART (CP210x).
 - Then: time sync, then EKF3 vision fusion.
 - In parallel (field): re-mount camera 40 deg, run cuVSLAM feature-tracking test.
+
+---
+
+## 2026-07-03 (night) — MAVROS bridge to Cube Orange (stable)
+
+### Serial link
+- Cube Orange Plus, ArduCopter 4.6.3. TELEM2 = SERIAL2: PROTOCOL=2 (MAVLink2), BAUD=921 (921600).
+- Jetson sees adapter as /dev/ttyUSB0 (CP210x). Added user to dialout (host + container admin).
+
+### Install
+- installed ros-humble-mavros + -extras + -msgs (v2.14.0) via apt.
+- Needed ros-humble-diagnostic-updater (missing lib; MAVROS died with libdiagnostic_updater.so not found until installed).
+- geographiclib egm96-5 geoid already present.
+- Launch: ros2 launch mavros apm.launch fcu_url:=/dev/ttyUSB0:921600 (apm = ArduPilot, NOT px4).
+
+### Key debug: dual-GCS conflict (NOT baud/wiring)
+- Initial symptom: /mavros/state connected flapping true/false; garbage "remote address" flood;
+  param download never completed (1000+ params missing), unsolicited param values.
+- Root cause: Mission Planner (Cube USB) AND MAVROS (TELEM2) both connected + polling at once.
+- Fix: disconnect Mission Planner. Then MAVROS alone = rock solid:
+  connected true steady, "PR: parameters list received", full FCU info.
+- BAUD 921600 IS FINE. Lesson: do not run MP (USB) + MAVROS (TELEM2) both polling FCU at once.
+  Later route MP through MAVROS gcs_url for a single clean pipeline.
+
+### Verified
+- /mavros/state: connected=true, armed=false, mode=STABILIZE, system_status=3 (STANDBY).
+- FCU: ArduCopter V4.6.3, CubeOrangePlus, Frame QUAD/X, 3 IMUs.
+- Pre-arm (via MAVROS): "RC not found" (expected, no TX) and "VisOdom: not healthy"
+  -> Cube ALREADY expects vision odometry (EKF3 vision source partly set). Good sign.
+
+### Next
+- Connect cuVSLAM odometry -> MAVROS /mavros/vision_pose/pose -> EKF3.
+- Verify EKF3 vision params (EK3_SRCn, VISO_*) per official ArduPilot docs.
+- Time sync (chrony + MAVLink TIMESYNC); verify VisOdom healthy.
