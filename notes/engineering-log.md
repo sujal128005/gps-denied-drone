@@ -4,17 +4,17 @@ Dated record of work, decisions, and rationale. Newest entries at the bottom.
 
 ---
 
-## 2026-07-03 -- Foundation: storage, Docker, Isaac ROS container
+## 2026-07-03 — Foundation: storage, Docker, Isaac ROS container
 
 ### Storage (T7 SSD)
 - Confirmed no NVMe on carrier board; Samsung T7 (USB) is the only external storage.
 - Wiped T7, created GPT + single ext4 partition, label t7ssd,
   UUID 2363d201-6ef9-4e64-ba8d-afbafc811355.
 - Mounted at /mnt/t7ssd via /etc/fstab using UUID with nofail +
-  x-systemd.device-timeout=10 so a missing drive never blocks boot.
+  x-systemd.device-timeout=10 so a missing/disconnected drive never blocks boot.
 - User-owned; verified writable. Rebooted to confirm auto-mount holds.
-- Known risk: USB storage on a vibrating airframe. OK for bench/tethered
-  bring-up. NVMe SSD recommended before untethered flight.
+- Known risk: USB-attached storage on a vibrating airframe. Acceptable for
+  bench/tethered bring-up. Sourcing an NVMe SSD recommended before untethered flight.
 
 ### Docker
 - JetPack shipped Docker CE 27.5.0 + NVIDIA Container Toolkit 1.16.2. Did not reinstall.
@@ -56,7 +56,38 @@ Dated record of work, decisions, and rationale. Newest entries at the bottom.
   to be validated on-site with cuVSLAM feature-tracking. Mount easy to change.
 - Storage: NVMe SSD recommended before untethered flight.
 
+---
+
+## 2026-07-03 (later) — RealSense camera bring-up (VIO-verified)
+
+### USB / permissions
+- D435i enumerated at 5000 Mbps (USB3.0) on host — full bandwidth, no USB2 trap.
+- Container could not open camera: RS2_USB_STATUS_ACCESS (failed to set power state).
+- Cause: no RealSense udev rules on the HOST (container reuses host USB perms).
+  The Isaac image's own rules reference a container-only script and are not for the host.
+- Fix: installed official IntelRealSense/librealsense 99-realsense-libusb.rules to
+  /etc/udev/rules.d/ (grants plugdev/0666); udevadm reload + trigger.
+- Camera node then went from crw-rw-r-- root:root to crw-rw-rw- root:plugdev. Access OK.
+
+### Firmware / SDK compatibility (verified vs Intel docs)
+- FW 5.13.0.50 (production-designated). librealsense 2.55.1 needs >= 5.11.6.250 -> compatible.
+- FW < 5.16 uses static gyro sensitivity (stable path); no action needed.
+- Serial: 344522070088.
+
+### Camera config for VIO (from NVIDIA official VSLAM realsense launch)
+- IR stereo pair (infra1/infra2), color+depth OFF, EMITTER OFF (dots corrupt tracking),
+  profile 640x360x90, IMU united (method 2) at gyro/accel 200 Hz.
+- First tried color+depth+IMU: color at 720p saturated USB -> control_transfer
+  warning flood, color dropping to ~22 Hz. Depth/IMU stayed healthy.
+- Switched to the VIO config: warnings stopped, all rates stable.
+
+### Measured rates (VIO config) — healthy
+- infra1 ~89.9 Hz, infra2 ~89.9 Hz (matched), imu ~199.6 Hz, all low std dev.
+
+### Notes
+- IMU factory calibration absent (defaults used). Consider rs-imu-calibration later.
+- See config/realsense/vio-camera-params.md for the full verified parameter set.
+
 ### Next
-- Re-mount camera at ~40 deg; measure and record achieved angle.
-- Bring up RealSense inside container: firmware vs librealsense 2.55.1,
-  USB3 enumeration, live topics.
+- Bring up Isaac ROS Visual SLAM (cuVSLAM) with the combined realsense launch.
+- Set up TF frames; run on-site feature-tracking test to finalize camera angle (~40 deg).
