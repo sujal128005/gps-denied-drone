@@ -1,0 +1,22 @@
+# Dockerfile.user - persistent custom layer for this project.
+# Adds MAVROS, Isaac ROS Visual SLAM, and serial-port group access
+# on top of the ros2_humble.realsense layer, so they survive container recreation.
+ARG BASE_IMAGE=ubuntu:22.04
+FROM ${BASE_IMAGE}
+
+# --- APD packages we installed manually before; now baked into the image ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-humble-mavros \
+    ros-humble-mavros-extras \
+    ros-humble-mavros-msgs \
+    ros-humble-diagnostic-updater \
+    ros-humble-diagnostic-msgs \
+    ros-humble-isaac-ros-visual-slam \
+ && rm -rf /var/lib/apt/lists/*
+
+# --- MAVROS GeographicLib geoid dataset (needed for altitude/coord conversions) ---
+RUN geographiclib-get-geoids egm96-5 || true
+
+# --- Ensure the container user can access serial devices (/dev/ttyUSB0 -> Cube Orange) ---
+# 'admin' is the non-root user Isaac ROS creates; dialout GID 20 matches the host.
+RUN usermod -aG dialout admin || true

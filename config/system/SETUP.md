@@ -36,3 +36,35 @@ paths noted below. Editing a file here does nothing until copied to its real pat
 6. Install git-lfs (`sudo apt install git-lfs && git lfs install`).
 7. Clone `isaac_ros_common` @ release-3.2 into `$ISAAC_ROS_WS/src`; add `.isaac_ros_common-config`.
 8. `./scripts/run_dev.sh` to build/launch the container.
+
+
+---
+
+## Container persistence (added 2026-07-03)
+
+Isaac ROS `run_dev.sh` recreates the container each session, so anything
+`apt install`'d inside a running container is LOST on recreation. Fixes:
+
+1. **Bake packages into the image** via `docker/Dockerfile.user` (custom layer).
+   Appended `.user` to the image key in `.isaac_ros_common-config`
+   (-> `CONFIG_IMAGE_KEY=ros2_humble.realsense.user`). The layer installs
+   MAVROS (+ extras, msgs), diagnostic-updater/msgs, isaac-ros-visual-slam,
+   and the geoid dataset. These now survive container recreation.
+
+2. **Serial-port access - GOTCHA.** Baking `usermod -aG dialout admin`
+   into the Dockerfile does NOT work: Isaac's runtime entrypoint re-creates the
+   `admin` user and strips extra groups. `--group-add dialout` via dockerargs
+   also gets overridden by the entrypoint.
+   FIX: a HOST udev rule (`99-cp210x-plugdev.rules`) sets the CP210x tty device
+   to GROUP=plugdev (not dialout). `admin` is ALWAYS in plugdev, so serial
+   access works in every fresh container automatically.
+
+3. **`.isaac_ros_dev-dockerargs*** (in scripts/) passes `--group-add dialout`
+   at container creation (kept as belt-and-suspenders; the udev rule is the
+   actual working fix).
+
+Rebuild: `docker rm -f isaac_ros_dev-aarch64-container` then `run_dev.sh`
+to force a fresh container (otherwise it reattaches to the old one).
+
+Related files: `Dockerfile.user`, `isaac_ros_dev-dockerargs`,
+`99-cp210x-plugdev.rules`.
