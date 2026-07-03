@@ -145,3 +145,39 @@ Not yet proven: tracking quality in real open-field evening conditions (on-site 
 - Connect cuVSLAM odometry -> MAVROS /mavros/vision_pose/pose -> EKF3.
 - Verify EKF3 vision params (EK3_SRCn, VISO_*) per official ArduPilot docs.
 - Time sync (chrony + MAVLink TIMESYNC); verify VisOdom healthy.
+
+---
+
+## 2026-07-03 (late night) — VIO -> EKF3 INTEGRATION WORKING (bench)
+
+**Core milestone: cuVSLAM VIO is now fused by ArduPilot EKF3.**
+
+### Container persistence (solved first)
+- Discovered run_dev.sh recreates the container -> in-container apt installs were lost.
+- Fix: Dockerfile.user custom layer (MAVROS + VSLAM + deps), key ros2_humble.realsense.user.
+- Serial access: Isaac entrypoint strips group-add; fixed with HOST udev rule
+  (cp210x tty -> GROUP=plugdev, which admin always has). Now persistent.
+
+### Frame convention (measured empirically)
+- Moved camera in known directions; cuVSLAM output: forward=+X, up=+Z, right=-Y.
+- That is FLU / ROS ENU convention = exactly what MAVROS vision_pose expects.
+- So pose copies straight through (no axis remap); MAVROS does ENU->NED.
+
+### Bridge node
+- vio_bridge/vio_to_mavros.py: subscribes /visual_slam/tracking/odometry
+  (nav_msgs/Odometry, BEST_EFFORT QoS), republishes as geometry_msgs/PoseStamped
+  on /mavros/vision_pose/pose, rate-capped to 30 Hz. Preserves header stamp.
+
+### Result (full chain proven)
+- camera -> cuVSLAM -> odom -> bridge -> /mavros/vision_pose/pose (30 Hz) -> MAVLink -> EKF3.
+- MAVROS log: "EKF3 IMU0 is using external nav data" + "initial pos NED = -0.0,-0.2,-0.1".
+  -> EKF3 has ACCEPTED and is FUSING the VIO.
+- /mavros/local_position/pose publishes a fused estimate (ArduPilot's own).
+- Pre-arm still shows "RC not found" (expected, no TX on bench).
+
+### Open / next
+- Validate fused position TRACKS camera motion correctly (sign/axis sanity).
+- Formalize bridge into a proper ROS 2 package in the repo.
+- Time sync (chrony + MAVLink TIMESYNC) for fusion quality.
+- Tune EK3_SRC_OPTIONS=0, VISO_POS_XYZ offsets, VISO_DELAY_MS after 40 deg mount.
+- 10 deg... on-site field test; NVMe before flight.
