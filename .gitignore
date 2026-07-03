@@ -1,0 +1,36 @@
+# Build / workspace artifacts (live on the T7, never commit)
+build/
+install/
+log/
+*.pyc
+__pycache__/
+
+# ROS bags (large binary recordings)
+*.bag
+*.db3
+*.mcap
+rosbag*/
+
+# Isaac ROS / vendored repos (referenced by version, not vendored)
+isaac_ros_common/
+src/isaac_ros_common/
+
+# Secrets / credentials (NEVER commit)
+*.pem
+*.key
+id_ed25519*
+*.token
+secrets/
+.env
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Large media / calibration dumps (add explicitly if needed)
+*.mp4
+*.avi
+*.pcd
