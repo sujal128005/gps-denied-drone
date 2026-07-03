@@ -1,0 +1,1 @@
+UUID=2363d201-6ef9-4e64-ba8d-afbafc811355  /mnt/t7ssd  ext4  defaults,nofail,x-systemd.device-timeout=10  0  2
