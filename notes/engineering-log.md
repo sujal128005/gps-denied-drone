@@ -181,3 +181,37 @@ Not yet proven: tracking quality in real open-field evening conditions (on-site 
 - Time sync (chrony + MAVLink TIMESYNC) for fusion quality.
 - Tune EK3_SRC_OPTIONS=0, VISO_POS_XYZ offsets, VISO_DELAY_MS after 40 deg mount.
 - 10 deg... on-site field test; NVMe before flight.
+
+---
+
+## 2026-07-04 — VIO scale bug found (diagnostic session)
+
+### Operational lessons (important for next time)
+- After reboot, container may fail with CDI "/dev/fb0 no such device".
+  Fix: sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml (static spec on toolkit 1.16.2).
+- BEFORE launching cuVSLAM: check for old realsense/visual_slam processes
+  (ps aux | grep -iE "realsense|visual_slam"). Two realsense nodes fighting the
+  one D435i -> "failed to set power state". Kill old ones + replug camera to fix.
+- HEALTH GATE: cuVSLAM must read stable when still before trusting it.
+
+### The scale bug (main finding)
+- cuVSLAM tracks STABLY when still (5 samples identical to 4 decimals). NOT diverging.
+- vo_state: 1 (healthy tracking); IR stream clean 90 Hz; IMU 200 Hz.
+- IMU accel magnitude = ~9.85 m/s^2 (correct gravity scale); y/z-split confirms ~40 deg tilt.
+- BUT: a ~50cm camera slide registered as ~50 m of displacement (~100x too large).
+- So scale is grossly wrong despite IMU, frames, and tracking all looking healthy.
+
+### Ruled OUT
+- IMU scale (gravity reads ~9.85 correctly).
+- Frame rate / dropped frames (IR steady 90 Hz).
+- Tracking loss / divergence (stable when still, vo_state healthy).
+
+### NEXT SESSION - attack the scale bug fresh
+1. Test cuVSLAM in VISUAL-ONLY mode (disable IMU fusion) to isolate whether
+   the IMU integration is causing the scale blowup.
+2. Check cuVSLAM camera-IMU extrinsics / base_frame config vs the 40 deg mount.
+3. Review cuVSLAM docs on expected IMU convention/units (rad/s vs deg/s, etc).
+4. Check if stereo baseline / camera_info is correct (wrong stereo baseline -> wrong scale).
+5. Note: camera currently at ~40 deg tilt; VISO_POS offsets still need setting.
+
+Status: VIO pipeline connects end-to-end, but motion scale is unusable until fixed.
