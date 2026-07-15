@@ -255,3 +255,13 @@ Status: VIO pipeline connects end-to-end, but motion scale is unusable until fix
 - Refine IMU-fusion scale bug for full VIO robustness (currently visual-only).
 - MAVROS 90% CPU - optimize later if needed.
 - remember: after reboot regen CDI (/dev/fb0); kill stale realsense procs before cuVSLAM.
+
+## 2026-07-15 — Infrastructure hardening
+- Permanent clock fix: chrony (JetPack's NTP) + fake-hwclock. 1970 problem resolved.
+- T7 recovered from read-only (USB dropout under load); fsck clean.
+- Hardened fstab: nofail + errors=remount-ro + auto-fsck (self-healing mount).
+- Installed T-Motor 15x5 props; motor test passed, correct directions.
+- One-command startup (tmux, 4 panes): start_drone.sh + drone_panes.sh + healthgate.sh.
+- Installed tmux inside container.
+- KNOWN: crash earlier was a calibration issue (fixed). Validation hover still pending.
+- BLOCKER: NVMe SSD needed — USB T7 dropped out under load; unsafe for autonomous flight.

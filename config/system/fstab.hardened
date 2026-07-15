@@ -1,0 +1,10 @@
+# /etc/fstab: static file system information.
+#
+# These are the filesystems that are always mounted on boot, you can
+# override any of these by copying the appropriate line from this file into
+# /etc/fstab and tweaking it as you see fit.  See fstab(5).
+#
+# <file system> <mount point>             <type>          <options>                               <dump> <pass>
+/dev/root            /                     ext4           defaults                                     0 1
+UUID=3FFC-5543 /boot/efi vfat defaults 0 1
+UUID=2363d201-6ef9-4e64-ba8d-afbafc811355 /mnt/t7ssd ext4 defaults,nofail,x-systemd.device-timeout=10,errors=remount-ro 0 2
