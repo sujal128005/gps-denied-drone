@@ -265,3 +265,9 @@ Status: VIO pipeline connects end-to-end, but motion scale is unusable until fix
 - Installed tmux inside container.
 - KNOWN: crash earlier was a calibration issue (fixed). Validation hover still pending.
 - BLOCKER: NVMe SSD needed — USB T7 dropped out under load; unsafe for autonomous flight.
+
+## 2026-07-15 (cont.) — Monitoring & shutdown tooling
+- Added flightmon.sh: live flight monitor (VIO position + mode/armed each second),
+  prints a flight summary on Ctrl+C after land+disarm.
+- Added stop_drone.sh: graceful pipeline shutdown (SIGINT then force), clean tmux teardown.
+- Fixed drone_panes.sh cuVSLAM pane (removed redundant pkill that killed its own launch).
