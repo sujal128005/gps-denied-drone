@@ -203,3 +203,32 @@ remaining work is to extend and steady the autonomous hold, tune the position-ho
 move to an internal SSD, verify vision accuracy against ground truth, and build up to the
 full takeoff-hold-land sequence and the reliability testing that makes it dependable rather
 than merely demonstrated.
+
+## 2026-07-17 — VIO accuracy investigation (bench)
+
+Set out to measure whether the vision position and camera-to-target distance are
+accurate. Worked solo today.
+
+Ran a controlled VIO test: placed marked points and hand-carried the drone through a
+known path (1 m forward, 1 m left, 1.27 m right to x', 0.29 m to a fourth point, and a
+1 m vertical move up a wall), capturing the reported position at each stop with a small
+press-to-capture tool.
+
+The results showed cuVSLAM losing its lock: the first 1 m move already read about 2.5 m,
+and by the end of the path the estimate had diverged to impossible values (around -6 to
+-10 m in a test area only 1-2 m across). The conclusion is that hand-carrying the drone
+is not a valid way to measure VIO accuracy - moving it by hand introduces rotation, jerk,
+and blank-wall views that break feature tracking. This is consistent with the fact that
+in actual flight the tracking is smooth and returns cleanly to its origin. So the flight
+data remains the better evidence of accuracy, and it has looked good.
+
+Takeaway for the future: to test VIO accuracy on the bench, the camera must move very
+slowly in a straight line, stay perfectly level, and always see texture - ideally mounted
+on something that slides rather than carried. Hand-tests will always look broken even when
+the system is fine.
+
+The target-distance (depth) test is still pending: it needs the actual green-and-black
+cross marker the detector was trained on, which was not available today.
+
+Also cleaned up the repository - rewrote the README and this engineering log for clarity
+and added a build timeline.
