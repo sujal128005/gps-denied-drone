@@ -1,279 +1,205 @@
 # Engineering Log
 
-Dated record of work, decisions, and rationale. Newest entries at the bottom.
+A dated record of building the GPS-denied drone: what we did, why we made the
+decisions we made, and how we worked through the problems that came up. Written as
+we went. Most recent entries are at the bottom.
 
 ---
 
-## 2026-07-03 — Foundation: storage, Docker, Isaac ROS container
+## Timeline overview
 
-### Storage (T7 SSD)
-- Confirmed no NVMe on carrier board; Samsung T7 (USB) is the only external storage.
-- Wiped T7, created GPT + single ext4 partition, label t7ssd,
-  UUID 2363d201-6ef9-4e64-ba8d-afbafc811355.
-- Mounted at /mnt/t7ssd via /etc/fstab using UUID with nofail +
-  x-systemd.device-timeout=10 so a missing/disconnected drive never blocks boot.
-- User-owned; verified writable. Rebooted to confirm auto-mount holds.
-- Known risk: USB-attached storage on a vibrating airframe. Acceptable for
-  bench/tethered bring-up. Sourcing an NVMe SSD recommended before untethered flight.
-
-### Docker
-- JetPack shipped Docker CE 27.5.0 + NVIDIA Container Toolkit 1.16.2. Did not reinstall.
-- Added user to docker group.
-- Relocated Docker data-root to /mnt/t7ssd/docker via daemon.json
-  (merged with existing nvidia runtimes block).
-- Added systemd drop-in wait-for-t7.conf (RequiresMountsFor=/mnt/t7ssd)
-  so Docker never starts before the T7 is mounted.
-- Verified post-reboot: data-root on T7, docker usable without sudo.
-
-### Isaac ROS
-- Workspace on T7: /mnt/t7ssd/workspaces/isaac_ros-dev/; ISAAC_ROS_WS in .bashrc.
-- Cloned isaac_ros_common at branch release-3.2 (verified compatible with
-  JetPack 6.2; requires Docker >= 27.2.0).
-- Config CONFIG_IMAGE_KEY=ros2_humble.realsense.
-- Installed git-lfs (was missing; run_dev.sh requires it, set -e caused
-  a silent early exit until fixed).
-- First container build pulled NVIDIA base + compiled realsense layer (~59 min).
-  Image isaac_ros_dev-aarch64 cached.
-
-### CDI / GPU-in-container fix
-- Launch failed: unresolvable CDI devices nvidia.com/gpu=all.
-- Cause: Toolkit 1.16.2 does not auto-generate CDI spec (auto from v1.18.0).
-- Fix: sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml.
-- nvidia-ctk cdi list now shows nvidia.com/gpu=all. Container launches cleanly.
-- Note: CDI spec is static on this toolkit; regenerate after JetPack/driver upgrade.
-
-### Verified inside the container
-- ROS 2 Humble, CUDA 12.6, OpenCV 4.5.4, GPU device nodes present.
-- librealsense 2.55.1; realsense2_camera packages installed and discoverable.
-
-### Scope clarification
-- Refined to outdoor-primary, GPS-denied, evening, no direct sun,
-  good ambient light, hover 2-5 m, open area.
-- Implication: pure VIO (no GPS fusion). Simpler EKF3 source config.
-
-### Open decisions
-- Camera orientation: target ~40 deg below horizontal at ~20 cm;
-  to be validated on-site with cuVSLAM feature-tracking. Mount easy to change.
-- Storage: NVMe SSD recommended before untethered flight.
+| Date | Focus |
+|---|---|
+| Early July 2026 | Platform foundation — storage, Docker, Isaac ROS container |
+| 2026-07-03 | Container persistence and serial-port access |
+| Early July 2026 | Camera configuration for visual odometry |
+| Mid July 2026 | cuVSLAM running; MAVROS link; the bridge node |
+| Mid July 2026 | EKF3 fusing vision as GPS ("using external nav data") |
+| Mid July 2026 | The scale problem — diagnosed and resolved |
+| Mid July 2026 | Validation, sign/axis checks, first flights |
+| 2026-07-08 | Flight 2 — autonomous position hold demonstrated |
+| Mid July 2026 | Thrust analysis from flight logs; propeller change |
+| 2026-07-15 | Infrastructure hardening; propeller validation flight |
+| 2026-07-16 | Three flights; VIO accuracy investigation |
 
 ---
 
-## 2026-07-03 (later) — RealSense camera bring-up (VIO-verified)
+## Early July — Platform foundation
 
-### USB / permissions
-- D435i enumerated at 5000 Mbps (USB3.0) on host — full bandwidth, no USB2 trap.
-- Container could not open camera: RS2_USB_STATUS_ACCESS (failed to set power state).
-- Cause: no RealSense udev rules on the HOST (container reuses host USB perms).
-  The Isaac image's own rules reference a container-only script and are not for the host.
-- Fix: installed official IntelRealSense/librealsense 99-realsense-libusb.rules to
-  /etc/udev/rules.d/ (grants plugdev/0666); udevadm reload + trigger.
-- Camera node then went from crw-rw-r-- root:root to crw-rw-rw- root:plugdev. Access OK.
+We started with a bare Jetson Orin Nano and built up the software platform everything
+else depends on.
 
-### Firmware / SDK compatibility (verified vs Intel docs)
-- FW 5.13.0.50 (production-designated). librealsense 2.55.1 needs >= 5.11.6.250 -> compatible.
-- FW < 5.16 uses static gyro sensitivity (stable path); no action needed.
-- Serial: 344522070088.
+Storage was the first decision. The Jetson's internal storage is limited and the vision
+software and workspace are large, so we run everything from a 1 TB external SSD mounted
+at a fixed path by UUID, with Docker configured to keep its data there. We added a systemd
+rule so Docker waits for the drive to be mounted before it starts, which avoids a race on
+boot.
 
-### Camera config for VIO (from NVIDIA official VSLAM realsense launch)
-- IR stereo pair (infra1/infra2), color+depth OFF, EMITTER OFF (dots corrupt tracking),
-  profile 640x360x90, IMU united (method 2) at gyro/accel 200 Hz.
-- First tried color+depth+IMU: color at 720p saturated USB -> control_transfer
-  warning flood, color dropping to ~22 Hz. Depth/IMU stayed healthy.
-- Switched to the VIO config: warnings stopped, all rates stable.
+The vision stack (NVIDIA Isaac ROS, including cuVSLAM) runs in a Docker container. Getting
+the container to have full GPU access took work — GPU devices are exposed through a CDI
+specification that has to be regenerated after a reboot, or container creation fails.
 
-### Measured rates (VIO config) — healthy
-- infra1 ~89.9 Hz, infra2 ~89.9 Hz (matched), imu ~199.6 Hz, all low std dev.
+## 2026-07-03 — Container persistence and serial access
 
-### Notes
-- IMU factory calibration absent (defaults used). Consider rs-imu-calibration later.
-- See config/realsense/vio-camera-params.md for the full verified parameter set.
+We hit a recurring frustration: anything installed inside the container was lost whenever
+the container was recreated by Isaac ROS's `run_dev.sh`. We solved it by baking our
+dependencies (MAVROS and its message packages, the visual SLAM package, and supporting
+libraries) into a custom image layer, so they are part of the image and survive every
+restart.
 
-### Next
-- Bring up Isaac ROS Visual SLAM (cuVSLAM) with the combined realsense launch.
-- Set up TF frames; run on-site feature-tracking test to finalize camera angle (~40 deg).
+A subtler problem sat underneath. The serial port to the flight controller needs group
+permissions, but Isaac's runtime entrypoint re-creates the container user and strips any
+extra groups we added — so baking the group in did not work. The fix was a host-side udev
+rule that assigns the serial device to a group the container user is always in, so serial
+access works in every fresh container automatically.
 
----
+## Early July — Camera configuration
 
-## 2026-07-03 (evening) — cuVSLAM VIO pipeline working (bench)
+cuVSLAM is only as good as the images it receives, so configuring the RealSense correctly
+for visual odometry mattered. We use the stereo infrared pair, because the known distance
+between the two lenses is what gives the motion estimate a real-world scale in metres. We
+turned the infrared projector off — counter-intuitive, since it exists to help depth
+sensing, but for visual odometry the projected dots are fixed to the camera and appear
+stationary as it moves, which corrupts feature tracking. With the projector off, the camera
+tracks the real textured world. We run the IR pair at 640x360 at 90 Hz to keep the motion
+between frames small, with the IMU at 200 Hz. On the bench this gives clean, matched
+~90 Hz stereo and ~200 Hz IMU.
 
-- Installed ros-humble-isaac-ros-visual-slam via apt (Isaac repo in container).
-- Launched isaac_ros_visual_slam_realsense.launch.py (camera + cuVSLAM together).
-- cuVSLAM tracker initialized OK (use_gpu: true, IMU fusion: true, ~6s GPU/TRT setup).
-- /visual_slam/tracking/odometry publishing steady at ~89.8 Hz.
-- Confirmed tracking responds to motion: position values change when camera moved,
-  return near start when returned. VIO is real.
-- GPU acceleration working inside container (CDI fix confirmed in practice).
+One recurring issue: only one process can own the camera at a time, so a stale process from
+a previous run blocks a new launch. Clearing old processes, and replugging the camera when
+needed, became a standard pre-launch step.
 
-Proven: camera -> cuVSLAM -> odometry pipeline, GPU, IMU fusion, motion tracking.
-Not yet proven: tracking quality in real open-field evening conditions (on-site test, 40 deg).
+## Mid July — Vision to flight controller
 
-### Next
-- MAVROS bridge: Jetson <-> Cube Orange over USB->UART (CP210x).
-- Then: time sync, then EKF3 vision fusion.
-- In parallel (field): re-mount camera 40 deg, run cuVSLAM feature-tracking test.
+The Jetson runs ROS 2 and the flight controller speaks MAVLink, so MAVROS bridges the two.
+The companion computer connects to the Cube's TELEM2 serial port at 921600 baud.
 
----
+cuVSLAM and the flight controller use different message formats, so we wrote a small bridge
+node that subscribes to cuVSLAM's odometry and republishes the pose in the format MAVROS
+expects for external navigation, rate-limited to 30 Hz. We looked carefully at coordinate
+conventions here, because a sign or axis error would make the drone correct in the wrong
+direction. cuVSLAM's output already matches the convention MAVROS expects on its vision
+input, so the bridge copies the pose across without remapping, and we verified the direction
+empirically later. One detail that caught us out more than once: cuVSLAM publishes with
+best-effort reliability, and a subscriber that does not match that setting receives nothing
+at all, silently.
 
-## 2026-07-03 (night) — MAVROS bridge to Cube Orange (stable)
+With the bridge running and the parameters set, the flight controller reported that it was
+using external navigation data — the point at which the vision system genuinely takes the
+place of GPS.
 
-### Serial link
-- Cube Orange Plus, ArduCopter 4.6.3. TELEM2 = SERIAL2: PROTOCOL=2 (MAVLink2), BAUD=921 (921600).
-- Jetson sees adapter as /dev/ttyUSB0 (CP210x). Added user to dialout (host + container admin).
+## Mid July — The scale problem
 
-### Install
-- installed ros-humble-mavros + -extras + -msgs (v2.14.0) via apt.
-- Needed ros-humble-diagnostic-updater (missing lib; MAVROS died with libdiagnostic_updater.so not found until installed).
-- geographiclib egm96-5 geoid already present.
-- Launch: ros2 launch mavros apm.launch fcu_url:=/dev/ttyUSB0:921600 (apm = ArduPilot, NOT px4).
+This was the hardest problem of the project, and worth recording in full because the method
+mattered as much as the fix.
 
-### Key debug: dual-GCS conflict (NOT baud/wiring)
-- Initial symptom: /mavros/state connected flapping true/false; garbage "remote address" flood;
-  param download never completed (1000+ params missing), unsolicited param values.
-- Root cause: Mission Planner (Cube USB) AND MAVROS (TELEM2) both connected + polling at once.
-- Fix: disconnect Mission Planner. Then MAVROS alone = rock solid:
-  connected true steady, "PR: parameters list received", full FCU info.
-- BAUD 921600 IS FINE. Lesson: do not run MP (USB) + MAVROS (TELEM2) both polling FCU at once.
-  Later route MP through MAVROS gcs_url for a single clean pipeline.
+With the full visual-inertial pipeline running, moving the camera a known distance produced
+a wildly wrong reading — a slide of half a metre registered as about fifty metres, roughly
+a hundred times too large. A drone acting on that would believe it had shot fifty metres
+sideways and would command a violent correction, so nothing could fly until we understood it.
 
-### Verified
-- /mavros/state: connected=true, armed=false, mode=STABILIZE, system_status=3 (STANDBY).
-- FCU: ArduCopter V4.6.3, CubeOrangePlus, Frame QUAD/X, 3 IMUs.
-- Pre-arm (via MAVROS): "RC not found" (expected, no TX) and "VisOdom: not healthy"
-  -> Cube ALREADY expects vision odometry (EKF3 vision source partly set). Good sign.
+Rather than guess, we ruled out each possible cause with a direct measurement. The IMU scale
+was correct — the accelerometer read gravity accurately at rest, and the way the reading
+split across axes even confirmed the camera's mounting angle. The frame rate was clean. The
+stereo baseline was correct — we computed it from the camera's own calibration and got
+exactly the expected 50 mm. Tracking was healthy and stable when still. With each of these
+eliminated, the remaining difference was the inertial fusion stage. We confirmed it by
+running in vision-only stereo mode, where the same half-metre slide read as exactly half a
+metre. The stereo pair alone provides correct metric scale, so vision-only operation is a
+legitimate configuration, and it is what the drone flies on.
 
-### Next
-- Connect cuVSLAM odometry -> MAVROS /mavros/vision_pose/pose -> EKF3.
-- Verify EKF3 vision params (EK3_SRCn, VISO_*) per official ArduPilot docs.
-- Time sync (chrony + MAVLink TIMESYNC); verify VisOdom healthy.
+The underlying inertial-fusion issue is not yet solved and remains future work; the likely
+cause is a mismatch between the camera's mounting angle and the frame convention the fusion
+assumes. But the platform is correctly scaled and flyable as it stands.
 
----
+## Mid July — Validation and first flights
 
-## 2026-07-03 (late night) — VIO -> EKF3 INTEGRATION WORKING (bench)
+Before flying we verified the whole chain was directionally correct: moving the camera
+forward, sideways, and up, and confirming the flight controller's fused position moved the
+correct way by the correct amount. We calibrated the radio, set the camera's measured offset
+from the flight controller as parameters, and confirmed motor order and direction.
 
-**Core milestone: cuVSLAM VIO is now fused by ArduPilot EKF3.**
+The first flight was flown manually in altitude-hold with the vision system running but not
+controlling the aircraft. The purpose was to answer the one question the bench never could:
+does the vision tracking survive real flight vibration? It did — the drone hovered stably and
+cuVSLAM tracked cleanly throughout, with no errors.
 
-### Container persistence (solved first)
-- Discovered run_dev.sh recreates the container -> in-container apt installs were lost.
-- Fix: Dockerfile.user custom layer (MAVROS + VSLAM + deps), key ros2_humble.realsense.user.
-- Serial access: Isaac entrypoint strips group-add; fixed with HOST udev rule
-  (cp210x tty -> GROUP=plugdev, which admin always has). Now persistent.
+## 2026-07-08 — Flight 2: autonomous position hold
 
-### Frame convention (measured empirically)
-- Moved camera in known directions; cuVSLAM output: forward=+X, up=+Z, right=-Y.
-- That is FLU / ROS ENU convention = exactly what MAVROS vision_pose expects.
-- So pose copies straight through (no axis remap); MAVROS does ENU->NED.
+The second flight was the core goal. We took off manually, then switched to a mode where the
+vision system actively controls position, and the drone held its position autonomously using
+vision alone, with no GPS. That flight also logged a thrust warning that limited how long the
+hold could be sustained, which led directly to the next piece of work.
 
-### Bridge node
-- vio_bridge/vio_to_mavros.py: subscribes /visual_slam/tracking/odometry
-  (nav_msgs/Odometry, BEST_EFFORT QoS), republishes as geometry_msgs/PoseStamped
-  on /mavros/vision_pose/pose, rate-capped to 30 Hz. Preserves header stamp.
+## Mid July — Thrust analysis and propeller change
 
-### Result (full chain proven)
-- camera -> cuVSLAM -> odom -> bridge -> /mavros/vision_pose/pose (30 Hz) -> MAVLink -> EKF3.
-- MAVROS log: "EKF3 IMU0 is using external nav data" + "initial pos NED = -0.0,-0.2,-0.1".
-  -> EKF3 has ACCEPTED and is FUSING the VIO.
-- /mavros/local_position/pose publishes a fused estimate (ArduPilot's own).
-- Pre-arm still shows "RC not found" (expected, no TX on bench).
+We pulled the flight log to understand the thrust warning rather than guess at it. The
+vibration was fine, which ruled that out. The motor outputs told the story: they were
+saturating near maximum just to hover, leaving essentially no margin to hold position or
+recover from a disturbance — exactly what the warning reports.
 
-### Open / next
-- Validate fused position TRACKS camera motion correctly (sign/axis sanity).
-- Formalize bridge into a proper ROS 2 package in the repo.
-- Time sync (chrony + MAVLink TIMESYNC) for fusion quality.
-- Tune EK3_SRC_OPTIONS=0, VISO_POS_XYZ offsets, VISO_DELAY_MS after 40 deg mount.
-- 10 deg... on-site field test; NVMe before flight.
+The cause was the propellers. Our motors are low-speed, high-efficiency motors designed to
+swing large propellers, and the ones fitted were smaller than the manufacturer recommends.
+An undersized propeller forces this kind of motor to spin near its limit to produce enough
+lift. We ordered the recommended larger propellers to correct it.
 
----
+## 2026-07-15 — Infrastructure hardening and propeller validation
 
-## 2026-07-04 — VIO scale bug found (diagnostic session)
+Two threads this day. First, we made the platform more robust for field work: a permanent
+fix for the clock (which reset on every power-up because the real-time clock has no backup
+battery, causing secure downloads to fail with a 1970 date), a self-healing mount for the
+external SSD after it dropped to read-only under an unclean shutdown, and a single-command
+startup that brings up the whole pipeline in one place along with a health check and a clean
+shutdown.
 
-### Operational lessons (important for next time)
-- After reboot, container may fail with CDI "/dev/fb0 no such device".
-  Fix: sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml (static spec on toolkit 1.16.2).
-- BEFORE launching cuVSLAM: check for old realsense/visual_slam processes
-  (ps aux | grep -iE "realsense|visual_slam"). Two realsense nodes fighting the
-  one D435i -> "failed to set power state". Kill old ones + replug camera to fix.
-- HEALTH GATE: cuVSLAM must read stable when still before trusting it.
+Second, we fitted the new propellers and validated them. The flight log confirmed the fix —
+the hover throttle dropped substantially from near-saturation to a comfortable level, the
+thrust warning was gone, and the aircraft flew with real margin. An earlier attempt that day
+ended in a hard set-down traced to a calibration issue, which we corrected before flying
+again.
 
-### The scale bug (main finding)
-- cuVSLAM tracks STABLY when still (5 samples identical to 4 decimals). NOT diverging.
-- vo_state: 1 (healthy tracking); IR stream clean 90 Hz; IMU 200 Hz.
-- IMU accel magnitude = ~9.85 m/s^2 (correct gravity scale); y/z-split confirms ~40 deg tilt.
-- BUT: a ~50cm camera slide registered as ~50 m of displacement (~100x too large).
-- So scale is grossly wrong despite IMU, frames, and tracking all looking healthy.
+## 2026-07-16 — Three flights and VIO accuracy
 
-### Ruled OUT
-- IMU scale (gravity reads ~9.85 correctly).
-- Frame rate / dropped frames (IR steady 90 Hz).
-- Tracking loss / divergence (stable when still, vo_state healthy).
+Flew three times, mostly at low altitude, building manual confidence on the more powerful
+propellers. cuVSLAM tracked cleanly across all three flights, including a larger excursion
+where it followed the drone out and settled back coherently. The last flight ended in a tip
+on landing that lightly damaged two propellers — a landing-technique issue, since the larger
+propellers produce much stronger ground effect and the aircraft floats more in the final
+half-metre.
 
-### NEXT SESSION - attack the scale bug fresh
-1. Test cuVSLAM in VISUAL-ONLY mode (disable IMU fusion) to isolate whether
-   the IMU integration is causing the scale blowup.
-2. Check cuVSLAM camera-IMU extrinsics / base_frame config vs the 40 deg mount.
-3. Review cuVSLAM docs on expected IMU convention/units (rad/s vs deg/s, etc).
-4. Check if stereo baseline / camera_info is correct (wrong stereo baseline -> wrong scale).
-5. Note: camera currently at ~40 deg tilt; VISO_POS offsets still need setting.
-
-Status: VIO pipeline connects end-to-end, but motion scale is unusable until fixed.
+We also began a proper investigation into the accuracy of the vision position and the
+camera-to-target distance, setting up a controlled bench test (measured one-metre moves in
+each axis) to quantify any error against ground truth rather than judging it by eye in flight.
 
 ---
 
-## 2026-07-05 — Scale bug FIXED + pre-flight prep
+## Standing operational notes
 
-### Scale bug root-cause + fix
-- Stereo baseline VERIFIED correct: P[3]=-16.117, fx=321.97 -> baseline=50mm (correct for D435i). NOT the bug.
-- VISUAL-ONLY TEST: copied stock launch -> vio_slam_noimu.launch.py, set enable_imu_fusion=False.
-- Result: 50cm slide read exactly ~0.50m (correct scale!). With IMU fusion on it was ~100x off.
-- CONCLUSION: the IMU FUSION was corrupting scale. FIX: run VISUAL-ONLY mode for now
-  (stereo gives metric scale). Launch with vio_slam_noimu.launch.py.
-- Suspect for IMU-fusion bug: imu_frame/extrinsics with the ~40deg tilt, or gyro units. Refine later.
+Things we learned the hard way and now treat as standard practice:
 
-### Sign/axis check (visual-only, correct scale)
-- cuVSLAM stable when still (identical samples). forward->+X, left->+Y, cuVSLAM raw z rose +0.27 on 30cm lift.
-- EKF3 fused: horizontal x/y correct direction + scale; z is baro-driven (EK3_SRC1_POSZ=1) so fused z doesn't follow camera lift - BY DESIGN.
+- The Jetson clock resets to 1970 on power-up; fixed with network time sync plus a fallback
+  that restores a valid time on boot. A hardware clock battery is the permanent fix.
+- After a reboot, the GPU device specification must be regenerated before the container starts.
+- MAVROS runs at high CPU, which can make interactive commands time out even though the link
+  is healthy; the publish rate is the reliable check, not an interactive read.
+- The external SSD can drop to read-only under an unclean shutdown, which stops Docker. We
+  hardened the mount to self-repair on boot, but a soldered internal drive is the real fix
+  before trusting the aircraft to fly unattended.
+- A stable vision reading is not necessarily a correct one — the tracker can report a steady
+  but completely wrong value when it has diverged, so our pre-flight check requires the
+  reading to be both stable and near zero when the drone is still.
 
-### Field attempt - aborted (correctly)
-- Went to field w/ props; MAVROS appeared pegged (100% CPU) -> aborted flight.
-- BENCH DIAGNOSIS: MAVROS actually WORKS (connected, state @ 1 Hz, params loaded) -
-  just runs hot at ~90% CPU. NOT a dead link. cuVSLAM stays stable even under that load.
-- Lowered SR2_POSITION 30->10 (CPU 99->90%). Stream rate is part of it; rest is Orin contention. Tolerable.
+We run a health check before every flight — vision stable and at full rate, the pose reaching
+the flight controller, the link connected, and external navigation being used — and only fly
+once all of it passes.
 
-### Pre-flight items done
-- RC: was "not found" -> did RC CALIBRATION in Mission Planner -> error gone. PPM rx, RCIN port, bound.
-- VISO_POS set to actual mount: X=0.13 (cam 13cm FWD), Y=0.0, Z=0.01 (1cm down). Camera tilt ~38 deg.
-- Pilot can fly AltHold/Stabilize manually.
+---
 
-### FLIGHT PLAN (next field session)
-- Flight 1: AltHold, VIO PASSIVE (not controlling). Manual hover. Watch if cuVSLAM survives flight vibration (never tested!).
-- Flight 2: Loiter/PosHold (VIO controls) ONLY after Flight 1 clean. Low, finger on mode switch to abort to AltHold.
-- First use mode switch AltHold<->Loiter as safety net.
+## Where the project stands
 
-### Open risks / TODO
-- Secure T7 + cables rigidly (T7 unmounted once today - USB storage risk on vibrating frame).
-- Left MIPI error on camera - watch under vibration.
-- NVMe still needed before autonomous (VIO-control) untethered flight.
-- Refine IMU-fusion scale bug for full VIO robustness (currently visual-only).
-- MAVROS 90% CPU - optimize later if needed.
-- remember: after reboot regen CDI (/dev/fb0); kill stale realsense procs before cuVSLAM.
-
-## 2026-07-15 — Infrastructure hardening
-- Permanent clock fix: chrony (JetPack's NTP) + fake-hwclock. 1970 problem resolved.
-- T7 recovered from read-only (USB dropout under load); fsck clean.
-- Hardened fstab: nofail + errors=remount-ro + auto-fsck (self-healing mount).
-- Installed T-Motor 15x5 props; motor test passed, correct directions.
-- One-command startup (tmux, 4 panes): start_drone.sh + drone_panes.sh + healthgate.sh.
-- Installed tmux inside container.
-- KNOWN: crash earlier was a calibration issue (fixed). Validation hover still pending.
-- BLOCKER: NVMe SSD needed — USB T7 dropped out under load; unsafe for autonomous flight.
-
-## 2026-07-15 (cont.) — Monitoring & shutdown tooling
-- Added flightmon.sh: live flight monitor (VIO position + mode/armed each second),
-  prints a flight summary on Ctrl+C after land+disarm.
-- Added stop_drone.sh: graceful pipeline shutdown (SIGINT then force), clean tmux teardown.
-- Fixed drone_panes.sh cuVSLAM pane (removed redundant pkill that killed its own launch).
-
-## 2026-07-15 (cont.) — Monitoring & shutdown tooling
-- Added flightmon.sh: live flight monitor (VIO position + mode/armed each second),
-  prints a flight summary on Ctrl+C after land+disarm.
-- Added stop_drone.sh: graceful pipeline shutdown (SIGINT then force), clean tmux teardown.
-- Fixed drone_panes.sh cuVSLAM pane (removed redundant pkill that killed its own launch).
+The vision-navigation system is built and flight-proven, autonomous position hold has been
+demonstrated in the air, and the thrust limitation has been diagnosed and corrected. The
+remaining work is to extend and steady the autonomous hold, tune the position-hold response,
+move to an internal SSD, verify vision accuracy against ground truth, and build up to the
+full takeoff-hold-land sequence and the reliability testing that makes it dependable rather
+than merely demonstrated.
